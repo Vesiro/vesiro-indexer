@@ -96,13 +96,17 @@ so the documents will be sourced from all around the year.
 
 ### Object Source
 
-`--object-source` chooses which of the two sources the Common Crawl files (or objects as AWS
+`--object-source` chooses which of the three sources the Common Crawl files (or objects as AWS
 calls files on S3) are read from. It defaults to `s3`.
 
 | Source | What it reads | Needs |
 | --- | --- | --- |
 | `s3` | Common Crawl's `commoncrawl` bucket, read directly | AWS credentials in the environment |
+| `https` | The same files from `https://data.commoncrawl.org/`, read directly | Nothing |
 | `server` | A vesiro-indexer server which serves the files it has already downloaded | `--server-url` |
+
+`https` serves the same files under the same keys as `s3`, so an index can switch between the two
+and keep its progress. It needs no account at all.
 
 Reading from `s3` needs an AWS account, because the bucket refuses unsigned requests. Any account
 works and the data is free. Grant your identity `s3:GetObject` on `arn:aws:s3:::commoncrawl/*`,

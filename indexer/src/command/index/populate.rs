@@ -78,6 +78,8 @@ impl IndexApp {
                 ObjectFetcher::server(self.client.clone(), server_url).await?
             }
             ObjectSource::S3 => ObjectFetcher::s3().await?,
+            // A client of its own, since `self.client` carries the node's credentials.
+            ObjectSource::Https => ObjectFetcher::https(reqwest::Client::new()),
         };
 
         let (index_info, index_db) = self.db.open_index(&uuid)?;
