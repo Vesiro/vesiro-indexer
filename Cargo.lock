@@ -707,6 +707,7 @@ dependencies = [
  "aws-config",
  "aws-sdk-s3",
  "flate2",
+ "reqwest",
  "tokio",
  "tracing",
  "tracing-subscriber",

@@ -1,9 +1,4 @@
 //! Where the collection objects come from.
-//!
-//! An object is either pulled off our own server, which keeps a copy of everything it has
-//! downloaded, or read straight out of Common Crawl's S3 bucket. Both sources hand back the same
-//! thing - the object's bytes, still gzip compressed - and address objects by the same
-//! [`DbCollectionObjectKey`], so the rest of the indexer does not care which one it got.
 
 use clap::ValueEnum;
 use reqwest::Url;
@@ -21,6 +16,8 @@ pub enum ObjectSource {
     Server,
     /// Common Crawl's S3 bucket, read directly.
     S3,
+    /// Common Crawl's HTTPS endpoint, `data.commoncrawl.org`, read directly.
+    Https,
 }
 
 /// One collection object, however it was listed.
@@ -37,8 +34,8 @@ pub enum ObjectFetcher {
         client: reqwest::Client,
         server_url: Url,
     },
-    S3 {
-        client: cc::S3Client,
+    CommonCrawl {
+        client: cc::Client,
     },
 }
 
@@ -54,9 +51,18 @@ impl ObjectFetcher {
     /// Connects to Common Crawl's S3 bucket.
     #[instrument]
     pub async fn s3() -> anyhow::Result<Self> {
-        Ok(ObjectFetcher::S3 {
+        Ok(ObjectFetcher::CommonCrawl {
             client: cc::s3_client().await?,
         })
+    }
+
+    /// Reads from `data.commoncrawl.org`.
+    ///
+    /// `client` is sent to Common Crawl, so it must not be one carrying the node's credentials.
+    pub fn https(client: reqwest::Client) -> Self {
+        ObjectFetcher::CommonCrawl {
+            client: cc::Client::Https(client),
+        }
     }
 
     /// The objects of `collection` that can be indexed, in the order they should be processed.
@@ -79,7 +85,7 @@ impl ObjectFetcher {
                     })
                     .collect())
             }
-            ObjectFetcher::S3 { client } => {
+            ObjectFetcher::CommonCrawl { client } => {
                 // The server numbers an object by its position in this very list, and `s3_keys`
                 // is deterministic - the shuffle runs off a fixed seed - so the `db_key` derived
                 // here is the one the server would have handed out for the same object. That is
@@ -107,7 +113,7 @@ impl ObjectFetcher {
                 tracing::debug!(?response, "response content");
                 Ok(response.error_for_status()?.bytes().await?.to_vec())
             }
-            ObjectFetcher::S3 { client } => cc::download(client, &object.s3_key).await,
+            ObjectFetcher::CommonCrawl { client } => cc::download(client, &object.s3_key).await,
         }
     }
 }

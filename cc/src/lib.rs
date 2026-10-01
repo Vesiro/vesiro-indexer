@@ -9,9 +9,21 @@ pub use aws_sdk_s3::Client as S3Client;
 /// The bucket the Common Crawl archives live in.
 const BUCKET: &str = "commoncrawl";
 
+/// Where Common Crawl serves the same archives over HTTPS. A key in the bucket is a path here.
+const HTTPS_BASE_URL: &str = "https://data.commoncrawl.org/";
+
+/// The two ways of reaching the Common Crawl archives. Both address an object by the same key.
+#[derive(Debug, Clone)]
+pub enum Client {
+    /// The `commoncrawl` S3 bucket, which needs AWS credentials.
+    S3(S3Client),
+    /// `data.commoncrawl.org`, which needs nothing.
+    Https(reqwest::Client),
+}
+
 /// A client pointed at the region the Common Crawl bucket lives in.
 #[instrument]
-pub async fn s3_client() -> anyhow::Result<aws_sdk_s3::Client> {
+pub async fn s3_client() -> anyhow::Result<Client> {
     let config = aws_config::defaults(BehaviorVersion::latest())
         .region(Region::new("us-east-1"))
         .load()
@@ -19,28 +31,28 @@ pub async fn s3_client() -> anyhow::Result<aws_sdk_s3::Client> {
     let config = aws_sdk_s3::config::Builder::from(&config)
         .force_path_style(true)
         .build();
-    Ok(aws_sdk_s3::Client::from_conf(config))
+    Ok(Client::S3(aws_sdk_s3::Client::from_conf(config)))
 }
 
 #[derive(Debug, Clone)]
 pub struct CcS3Collection(&'static str);
 
 impl CcS3Collection {
-    #[instrument(skip(aws_client))]
-    pub async fn wet_paths(&self, aws_client: &aws_sdk_s3::Client) -> anyhow::Result<Vec<String>> {
+    #[instrument(skip(client))]
+    pub async fn wet_paths(&self, client: &Client) -> anyhow::Result<Vec<String>> {
         let key = format!("{}/wet.paths.gz", self.0);
-        Ok(Self::fetch(aws_client, &key).await?)
+        Ok(Self::fetch(client, &key).await?)
     }
 
-    #[instrument(skip(aws_client))]
-    pub async fn warc_paths(&self, aws_client: &aws_sdk_s3::Client) -> anyhow::Result<Vec<String>> {
+    #[instrument(skip(client))]
+    pub async fn warc_paths(&self, client: &Client) -> anyhow::Result<Vec<String>> {
         let key = format!("{}/warc.paths.gz", self.0);
-        Ok(Self::fetch(aws_client, &key).await?)
+        Ok(Self::fetch(client, &key).await?)
     }
 
-    #[instrument(skip(aws_client))]
-    async fn fetch(aws_client: &aws_sdk_s3::Client, key: &str) -> anyhow::Result<Vec<String>> {
-        let body = download(aws_client, key).await?;
+    #[instrument(skip(client))]
+    async fn fetch(client: &Client, key: &str) -> anyhow::Result<Vec<String>> {
+        let body = download(client, key).await?;
         let mut decoder = flate2::read::GzDecoder::new(&body[..]);
         let mut s = String::new();
         std::io::Read::read_to_string(&mut decoder, &mut s)?;
@@ -48,17 +60,31 @@ impl CcS3Collection {
     }
 }
 
-/// Downloads the object stored under `key` in the Common Crawl bucket.
-#[instrument(skip(aws_client))]
-pub async fn download(aws_client: &aws_sdk_s3::Client, key: &str) -> anyhow::Result<Vec<u8>> {
+/// Downloads the Common Crawl object stored under `key`.
+#[instrument(skip(client))]
+pub async fn download(client: &Client, key: &str) -> anyhow::Result<Vec<u8>> {
     tracing::debug!(key = key, "downloading");
-    let object = aws_client
-        .get_object()
-        .bucket(BUCKET)
-        .key(key)
-        .send()
-        .await?;
-    let body = object.body.collect().await?.into_bytes();
+    let body = match client {
+        Client::S3(aws_client) => {
+            let object = aws_client
+                .get_object()
+                .bucket(BUCKET)
+                .key(key)
+                .send()
+                .await?;
+            object.body.collect().await?.into_bytes()
+        }
+        Client::Https(client) => {
+            let url = reqwest::Url::parse(HTTPS_BASE_URL)?.join(key)?;
+            client
+                .get(url)
+                .send()
+                .await?
+                .error_for_status()?
+                .bytes()
+                .await?
+        }
+    };
     tracing::debug!(key = key, len = body.len(), "downloaded");
     Ok(body.to_vec())
 }
@@ -88,7 +114,7 @@ fn should_shuffle(collection: &Collection) -> bool {
 
 /// The keys of every object in `collection`, in the order they should be processed.
 #[instrument(skip(client))]
-pub async fn s3_keys(client: &S3Client, collection: &Collection) -> anyhow::Result<Vec<String>> {
+pub async fn s3_keys(client: &Client, collection: &Collection) -> anyhow::Result<Vec<String>> {
     use Collection::*;
 
     let mut s3_keys = Vec::new();
